@@ -115,7 +115,7 @@ class TransformPostgreSQLToExcel(QgsProcessingAlgorithm):
         if 'lb_nom' in df.columns and 'indice_abondance_dominance' in df.columns:
             taxon_data = df[['numero_releve', 'lb_nom', 'indice_abondance_dominance', 'strate_vegetation', 'type_releve']].dropna(subset=['lb_nom']).drop_duplicates()
 
-        taxon_data['strate_vegetation'] = taxon_data['strate_vegetation'].fillna('')
+        taxon_data['strate_vegetation'] = taxon_data['strate_vegetation'].fillna('Non stratifié')
         taxon_grouped = taxon_data.groupby('strate_vegetation')['lb_nom'].unique()
 
         # Définir l'ordre des strates
@@ -123,7 +123,7 @@ class TransformPostgreSQLToExcel(QgsProcessingAlgorithm):
             'Strate arborée': 1,
             'Strate arbustive': 2,
             'Strate herbacée': 3,
-            'Non-Stratifié': 4  # Pour les valeurs nulles ou non stratifiées
+            'Non stratifié': 4  # Pour les valeurs nulles ou non stratifiées
         }
 
         # Trier les strates selon l'ordre défini, puis trier les taxons dans chaque strate par ordre alphabétique
