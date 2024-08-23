@@ -4,19 +4,19 @@ from qgis.core import QgsProcessingAlgorithm, QgsProcessingParameterFileDestinat
 
 class TransformPostgreSQLToExcel(QgsProcessingAlgorithm):
     OUTPUT = 'OUTPUT'  # Path to output Excel file
-    RELEVES = 'RELEVES'  # New parameter for filtering by number of relevé
+    RELEVES = 'RELEVES'  # Parameter for filtering by number of relevé
 
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterFileDestination(
             self.OUTPUT,
-            'Output Excel file',
+            'Fichier Excel de sortie',
             'Excel files (*.xlsx)',
             defaultValue='C:/Users/Cedric/Desktop/phyto.xlsx'
         ))
         
         self.addParameter(QgsProcessingParameterString(
             self.RELEVES,
-            'Filter by numéros de relevé (comma-separated)',
+            'Filtrer par numéros de relevé (séparés par une virgule)',
             defaultValue='20240618CB01,T6-C5/1'
         ))
 
@@ -26,15 +26,14 @@ class TransformPostgreSQLToExcel(QgsProcessingAlgorithm):
 
         # Database connection parameters
         conn_params = {
-            'dbname': 'xx',
-            'user': 'xx',
-            'password': 'xx',
-            'host': 'xx.fr',
+            'dbname': 'x',
+            'user': 'x',
+            'password': 'x',
+            'host': 'x.fr',
             'port': '5432'
-        }
-        
+        }        
         # Create the filter condition
-        filter_condition = self._build_filter_condition(releves_filter)
+        filter_condition, params = self._build_filter_condition(releves_filter)
         
         # Connect to the PostgreSQL database
         try:
@@ -43,7 +42,7 @@ class TransformPostgreSQLToExcel(QgsProcessingAlgorithm):
 
             # Execute the query
             query = f"SELECT * FROM geonature.v_releves_phytosocioceno WHERE {filter_condition}"
-            cursor.execute(query)
+            cursor.execute(query, params)
 
             # Fetch the data
             columns = [desc[0] for desc in cursor.description]
@@ -112,105 +111,85 @@ class TransformPostgreSQLToExcel(QgsProcessingAlgorithm):
         # Get unique releve numbers
         unique_releves = df['numero_releve'].dropna().unique()
 
-        # Handle lb_nom, indice_abondance_dominance, and strate_vegetation
+        # Gestion des taxons uniques par strate
         if 'lb_nom' in df.columns and 'indice_abondance_dominance' in df.columns:
             taxon_data = df[['numero_releve', 'lb_nom', 'indice_abondance_dominance', 'strate_vegetation', 'type_releve']].dropna(subset=['lb_nom']).drop_duplicates()
 
-            for releve in unique_releves:
-                releve_data = taxon_data[taxon_data['numero_releve'] == releve]
-                
-                # Préparer les listes de taxon_rows pour chaque relevé
-                taxon_rows = []
-                
-                for _, row in releve_data.iterrows():
-                    taxon = row['lb_nom']
-                    strate = row['strate_vegetation']
-                    abundance = row['indice_abondance_dominance']
-                    type_releve = row['type_releve']
-                    
-                    # Format the taxon row correctly based on whether strate_vegetation is present
-                    if pd.notna(strate):
-                        taxon_row = f";{strate};{taxon}"
-                    else:
-                        taxon_row = f";{taxon}"
-                    
-                    # Adjust the abundance based on type_releve
-                    if type_releve == 'Relevé phytosociologique':
-                        # Transform values
-                        if pd.notna(abundance):
+        taxon_data['strate_vegetation'] = taxon_data['strate_vegetation'].fillna('')
+        taxon_grouped = taxon_data.groupby('strate_vegetation')['lb_nom'].unique()
+
+        # Définir l'ordre des strates
+        strate_order = {
+            'Strate arborée': 1,
+            'Strate arbustive': 2,
+            'Strate herbacée': 3,
+            'Non-Stratifié': 4  # Pour les valeurs nulles ou non stratifiées
+        }
+
+        # Trier les strates selon l'ordre défini, puis trier les taxons dans chaque strate par ordre alphabétique
+        sorted_strate_taxon_pairs = sorted(
+            taxon_grouped.items(),
+            key=lambda x: (strate_order.get(x[0], 5), sorted(x[1]))
+        )
+
+        # Processus des taxons triés par strate pour chaque relevé
+        for strate, taxons in sorted_strate_taxon_pairs:
+            # Taxons triés par ordre alphabétique au sein de chaque strate
+            sorted_taxons = sorted(taxons)
+
+            for taxon in sorted_taxons:
+                taxon_row = [strate, taxon]
+
+                for releve in unique_releves:
+                    releve_data = taxon_data[
+                        (taxon_data['numero_releve'] == releve) &
+                        (taxon_data['lb_nom'] == taxon) &
+                        (taxon_data['strate_vegetation'] == strate)
+                    ]
+
+                    if not releve_data.empty:
+                        abundance = releve_data['indice_abondance_dominance'].values[0]
+                        type_releve = releve_data['type_releve'].values[0]
+
+                        if type_releve == 'Relevé phytosociologique':
                             if abundance == '+ : Individus peu abondants, recouvrement inférieur à 5% de la surface':
                                 abundance = '0.5'
                             elif abundance == 'i : Individu unique':
                                 abundance = '0.1'
                             elif abundance == 'r : Individus très rares, recouvrant moins de 1% de la surface':
                                 abundance = '0.2'
-                            elif abundance == '':
+                            elif pd.isna(abundance):
                                 abundance = '0'
                             else:
-                                abundance = str(abundance)[0] if pd.notna(abundance) else '1'  # Default to first character
-                        else:
+                                abundance = str(abundance)[0] if pd.notna(abundance) else '1'
+                        elif type_releve == 'Relevé phytocénotique':
                             abundance = '1'
-                        taxon_row += f";{abundance}"
-                    elif type_releve == 'Relevé phytocénotique':
-                        taxon_row += ";1"
                     else:
-                        taxon_row += f";{abundance if pd.notna(abundance) else '1'}"
-                    
-                    taxon_rows.append(taxon_row)
-                
-                # Convertir les taxon_rows en DataFrame pour séparer les colonnes
-                if taxon_rows:
-                    df_taxon = pd.DataFrame(taxon_rows, columns=['Combined'])
-                    df_taxon[['Strate', 'Taxon', 'Abundance']] = df_taxon['Combined'].str.split(';', expand=True)
-                    
-                    # Créer une colonne temporaire pour le tri par strate
-                    strata_order = {
-                        'Strate arborée': 1,
-                        'Strate arbustive': 2,
-                        'Strate herbacée': 3
-                    }
-                    df_taxon['strate_order'] = df_taxon['Strate'].map(strata_order).fillna(4)  # Fillna with 4 for empty or unrecognized strata
-                    
-                    # Trier les lignes par 'strate_order', puis par 'Taxon'
-                    df_taxon_sorted = df_taxon.sort_values(by=['strate_order', 'Taxon'])
-                    
-                    # Retirer la colonne temporaire
-                    df_taxon_sorted = df_taxon_sorted.drop(columns=['strate_order'])
-                    
-                    # Créer une ligne par Strate et Taxon
-                    for _, row in df_taxon_sorted.iterrows():
-                        taxon_row = [row['Strate'] if pd.notna(row['Strate']) else '']
-                        taxon_row.append(row['Taxon'])
-                        
-                        for r in unique_releves:
-                            if r == releve:
-                                if type_releve == 'Relevé phytosociologique':
-                                    taxon_row.append(row['Abundance'])
-                                elif type_releve == 'Relevé phytocénotique':
-                                    taxon_row.append('1')
-                                else:
-                                    taxon_row.append(row['Abundance'] if pd.notna(row['Abundance']) else '1')
-                            else:
-                                taxon_row.append('')
-                        
-                        result.append(taxon_row)
+                        abundance = ''
 
-        # Write the results to an Excel file
+                    taxon_row.append(abundance)
+
+                result.append(taxon_row)
+
+        # Écrire les résultats dans un fichier Excel
         df_result = pd.DataFrame(result)
         df_result.to_excel(output_file, index=False, header=False)
 
-        feedback.pushInfo(f"Transformation completed. Results saved to '{output_file}'.")
+        feedback.pushInfo(f"Transformation complétée. Résultats sauvegardés dans '{output_file}'.")
 
         return {}
+
+
+
 
     def _build_filter_condition(self, releves_filter):
         releves_list = releves_filter.split(',')
         releves_list = [r.strip() for r in releves_list if r.strip()]  # Clean up any extra spaces
         if releves_list:
-            # Use LIKE operator for partial matching
-            releves_condition = " OR ".join([f"numero_releve LIKE '%{r}%'" for r in releves_list])
-            return releves_condition
-        return ''
+            # Use placeholders and parameters for safe query construction
+            placeholders = " OR ".join(["numero_releve LIKE %s" for _ in releves_list])
+            return placeholders, tuple(f'%{r}%' for r in releves_list)
+        return '', ()
 
     def name(self):
         return 'extraction_relevephyto_geonature'
