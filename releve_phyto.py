@@ -5,42 +5,62 @@ from qgis.core import QgsProcessingAlgorithm, QgsProcessingParameterFileDestinat
 class TransformPostgreSQLToExcel(QgsProcessingAlgorithm):
     OUTPUT = 'OUTPUT'  # Path to output Excel file
     RELEVES = 'RELEVES'  # Parameter for filtering by number of relevé
+    OBSERVATEUR = 'OBSERVATEUR'  # Parameter for filtering by observer
+    DATE = 'DATE'  # Parameter for filtering by date
 
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterFileDestination(
             self.OUTPUT,
             'Fichier Excel de sortie',
             'Excel files (*.xlsx)',
-            defaultValue='C:/Users/Cedric/Desktop/phyto.xlsx'
+            defaultValue=''
         ))
-        
+
         self.addParameter(QgsProcessingParameterString(
             self.RELEVES,
             'Filtrer par numéros de relevé (séparés par une virgule)',
-            defaultValue='20240618CB01,T6-C5/1'
+            defaultValue='',
+            optional=True  # Marking this parameter as optional
+        ))
+
+        self.addParameter(QgsProcessingParameterString(
+            self.OBSERVATEUR,
+            'Filtrer par observateurs (séparés par une virgule)',
+            defaultValue='',
+             optional=True  # Marking this parameter as optional
+       ))
+
+        self.addParameter(QgsProcessingParameterString(
+            self.DATE,
+            'Filtrer par date (séparées par une virgule, format YYYY-MM-DD)',
+            defaultValue='',
+            optional=True  # Marking this parameter as optional
         ))
 
     def processAlgorithm(self, parameters, context, feedback):
         output_file = self.parameterAsFileOutput(parameters, self.OUTPUT, context)
         releves_filter = self.parameterAsString(parameters, self.RELEVES, context)
+        observateur_filter = self.parameterAsString(parameters, self.OBSERVATEUR, context)
+        date_filter = self.parameterAsString(parameters, self.DATE, context)
 
-        # Database connection parameters
+      # Database connection parameters
         conn_params = {
             'dbname': 'x',
             'user': 'x',
             'password': 'x',
             'host': 'x.fr',
             'port': '5432'
-        }        
-        # Create the filter condition
-        filter_condition, params = self._build_filter_condition(releves_filter)
+        }   
         
+        # Create the filter condition using the provided filters
+        filter_condition, params = self._build_filter_condition(releves_filter, observateur_filter, date_filter)
+
         # Connect to the PostgreSQL database
         try:
             conn = psycopg2.connect(**conn_params)
             cursor = conn.cursor()
 
-            # Execute the query
+            # Execute the query with the dynamically generated filter condition
             query = f"SELECT * FROM geonature.v_releves_phytosocioceno WHERE {filter_condition}"
             cursor.execute(query, params)
 
@@ -76,7 +96,7 @@ class TransformPostgreSQLToExcel(QgsProcessingAlgorithm):
             'numero_releve': 'numero_releve',
             'observateurs': 'observateurs',
             'date_min': 'date_min',
-            'date_max': 'date_max',  
+            'date_max': 'date_max',
             'altitude_min': 'altitude_min',
             'altitude_max': 'altitude_max',
             'pente': 'pente',
@@ -93,7 +113,7 @@ class TransformPostgreSQLToExcel(QgsProcessingAlgorithm):
             'strate_arbustive_recouvrement': 'strate_arbustive_recouvrement',
             'strate_herbacee_hauteurmoyenne': 'strate_herbacee_hauteurmoyenne',
             'strate_herbacee_recouvrement': 'strate_herbacee_recouvrement',
-            'strate_muscinale_recouvrementtotal': 'strate_muscinale_recouvrementtotal',            
+            'strate_muscinale_recouvrementtotal': 'strate_muscinale_recouvrementtotal',
             'strate_muscinale_recouvrementsphaigne': 'strate_muscinale_recouvrementsphaigne',
             'type_releve': 'type_releve'
         }
@@ -179,17 +199,36 @@ class TransformPostgreSQLToExcel(QgsProcessingAlgorithm):
 
         return {}
 
+    def _build_filter_condition(self, releves_filter, observateur_filter, date_filter):
+        conditions = []
+        params = []
 
+        # Filter by releve numbers if provided
+        if releves_filter:
+            releves_list = [r.strip() for r in releves_filter.split(',') if r.strip()]
+            if releves_list:
+                conditions.append(" OR ".join(["numero_releve LIKE %s" for _ in releves_list]))
+                params.extend([f'%{r}%' for r in releves_list])
 
+        # Filter by observer if provided
+        if observateur_filter:
+            observateurs_list = [o.strip() for o in observateur_filter.split(',') if o.strip()]
+            if observateurs_list:
+                conditions.append(" OR ".join(["observateurs LIKE %s" for _ in observateurs_list]))
+                params.extend([f'%{o}%' for o in observateurs_list])
 
-    def _build_filter_condition(self, releves_filter):
-        releves_list = releves_filter.split(',')
-        releves_list = [r.strip() for r in releves_list if r.strip()]  # Clean up any extra spaces
-        if releves_list:
-            # Use placeholders and parameters for safe query construction
-            placeholders = " OR ".join(["numero_releve LIKE %s" for _ in releves_list])
-            return placeholders, tuple(f'%{r}%' for r in releves_list)
-        return '', ()
+        # Filter by date if provided
+        if date_filter:
+            dates_list = [d.strip() for d in date_filter.split(',') if d.strip()]
+            if dates_list:
+                conditions.append(" OR ".join(["date_min = %s" for _ in dates_list]))
+                params.extend(dates_list)
+
+        # If no filters are provided, return a condition that matches all rows
+        if not conditions:
+            return '1=1', params  # No filters, fetch all
+        else:
+            return ' AND '.join(f"({condition})" for condition in conditions), params
 
     def name(self):
         return 'extraction_relevephyto_geonature'
